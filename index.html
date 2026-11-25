@@ -24,7 +24,7 @@
   p b { color: #e6e8eb; font-weight: 600 }
   code { background: #1a1f26; padding: .1em .35em; border-radius: 4px; font-size: 12.5px }
   .btn { display: inline-block; text-decoration: none; text-align: center;
-         background: #4f7cff; color: #fff; font-weight: 600; padding: 12px 18px;
+         background: #4f7cff; color: #fff; padding: 12px 18px;
          border: 0; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 600 }
   .btn:hover { background: #5f87ff }
   label { display: block; font-size: 11.5px; color: #8b9199; margin: 12px 0 5px }
@@ -82,32 +82,35 @@
 const $ = (id) => document.getElementById(id);
 const cfg = window.RWP || {};
 const keys = ['backend', 'wisp', 'place'];
+const stored = (k) => { try { return localStorage.getItem('rwp_' + k) || ''; } catch { return ''; } };
 
-// Precedence: what this browser remembers, else config.js, else empty.
-for (const k of keys) {
-  let v = '';
-  try { v = localStorage.getItem('rwp_' + k) || ''; } catch {}
-  $(k).value = v || cfg[k] || '';
-}
+// Precedence: what this browser remembers, else config.js, else empty. Defaults
+// are only stored once the field is edited, so changing config.js still reaches
+// browsers that never touched it.
+for (const k of keys) $(k).value = stored(k) || cfg[k] || '';
 
 const note = $('note');
-function save() {
-  for (const k of keys) {
-    try { localStorage.setItem('rwp_' + k, $(k).value.trim()); } catch {}
-  }
+function check() {
   const backend = $('backend').value.trim().replace(/\/+$/, '');
-  note.className = 'note';
-  if (!backend) note.textContent = 'set your server before signing in — the proxy hands the session to it.';
-  else if (!/^https?:\/\//i.test(backend)) note.textContent = 'server should start with https://';
-  else if (!$('wisp').value.trim()) note.textContent = 'the proxy needs a Wisp relay to reach roblox.com';
-  else note.textContent = 'saved for this browser';
-  note.className = note.textContent === 'saved for this browser' ? 'note' : 'note warn';
+  let text = 'saved for this browser';
+  if (!backend) text = 'set your server before signing in — the proxy hands the session to it.';
+  else if (!/^https?:\/\//i.test(backend)) text = 'server should start with https://';
+  else if (!$('wisp').value.trim()) text = 'the proxy needs a Wisp relay to reach roblox.com';
+  note.textContent = text;
+  note.className = text === 'saved for this browser' ? 'note' : 'note warn';
   // keep the proxy page in step without a round trip
-  document.getElementById('signin').href = 'proxy.html' +
-    (backend ? '?backend=' + encodeURIComponent(backend) : '');
+  $('signin').href = 'proxy.html' + (backend ? '?backend=' + encodeURIComponent(backend) : '');
 }
-for (const k of keys) $(k).addEventListener('input', save);
-save();
+
+for (const k of keys) {
+  $(k).addEventListener('input', () => {
+    for (const key of keys) {
+      try { localStorage.setItem('rwp_' + key, $(key).value.trim()); } catch {}
+    }
+    check();
+  });
+}
+check();
 </script>
 </body>
 </html>
