@@ -93,11 +93,13 @@ running. Pids, logs and the current URL live in `.run/` (git-ignored).
 
 Without `--setup` it uses a trycloudflare quick tunnel. That name dies with the
 process, so `worker/` is deployed in front of it — a small Cloudflare Worker
-that proxies HTTP and WebSocket traffic to whichever origin is current. Each
-restart redeploys the Worker with the new tunnel and leaves `config.js` alone,
-so the gate keeps one fixed address (`https://roblox-webport.<account>.workers.dev`)
-and no commit is made unless that address itself changes. `--no-worker` skips
-this and points `config.js` straight at the tunnel.
+that proxies HTTP and WebSocket traffic to whichever origin is current. A
+restart only redeploys it when the tunnel name actually changed; the Worker is
+then proved before it is trusted — `200` on `/` and a real WebSocket `101` on
+`/udp-relay` — and `config.js` is left alone, so the gate keeps one fixed
+address (`https://roblox-webport.<account>.workers.dev`) and no commit is made
+unless that address itself changes. `--no-worker` skips this and points
+`config.js` straight at the tunnel.
 
 One-time setup for it is just `npx wrangler login` (browser approval); after that
 `start.sh` deploys non-interactively. The Worker is a transparent proxy on
