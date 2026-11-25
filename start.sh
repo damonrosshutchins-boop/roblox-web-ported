@@ -62,8 +62,12 @@ case "${1:-}" in
     host=${2:-}; [ -n "$host" ] || die "usage: ./start.sh --setup <hostname> [tunnel-name]"
     name=${3:-roblox-webport}
     [ -f "$cloudflared" ] || die "no cloudflared at $cloudflared"
-    echo "Cloudflare login: a browser opens — pick the zone that owns $host."
-    "$cloudflared" tunnel login || die "cloudflared login failed"
+    if [ -f "${TUNNEL_ORIGIN_CERT:-$HOME/.cloudflared/cert.pem}" ]; then
+      echo "cloudflared is already logged in"
+    else
+      echo "Cloudflare login: a browser opens — pick the zone that owns $host."
+      "$cloudflared" tunnel login || die "cloudflared login failed"
+    fi
     if ! "$cloudflared" tunnel list 2>/dev/null | awk 'NR>1 {print $2}' | grep -qx "$name"; then
       "$cloudflared" tunnel create "$name" || die "could not create tunnel $name"
     else
