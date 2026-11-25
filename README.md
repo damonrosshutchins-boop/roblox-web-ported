@@ -68,6 +68,19 @@ Two pieces need a real server, and GitHub Pages is not one:
 - **the game** — the engine is a genuine WebTransport client, so joining needs the
   web-port server. Pages serves the sign-in page only.
 
+## Starting it
+
+```bash
+./start.sh            # reuse a healthy tunnel, else start one
+./start.sh --fresh    # always start a new tunnel
+```
+
+It boots the web-port server (reusing one already answering on `:9989`), starts
+a cloudflared quick tunnel, reads the URL cloudflared actually printed, writes it
+into `config.js` and pushes that commit — so the gate follows the tunnel instead
+of pointing at a dead name. Pids, logs and the current URL stay in `.run/`,
+which is ignored. `WEBPORT_SERVER` and `WEBPORT_PORT` override the defaults.
+
 ## Pointing it at your own server
 
 Set *your server* and *Wisp relay* on `index.html` (remembered per browser), or
