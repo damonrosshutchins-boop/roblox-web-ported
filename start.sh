@@ -4,6 +4,7 @@
 #
 #   ./start.sh                      reuse a healthy tunnel, else start one
 #   ./start.sh --fresh              stop the recorded tunnel, then start a new one
+#   ./start.sh --no-worker          point config.js at the tunnel instead of the Worker
 #   ./start.sh --health <url>       exit 0 only for a 2xx (test hook)
 #   ./start.sh --setup <hostname>   once: Cloudflare login, named tunnel, DNS
 #
@@ -86,7 +87,15 @@ EOF
 esac
 
 fresh=0
-[ "${1:-}" = "--fresh" ] && fresh=1
+worker=1
+for arg in "$@"; do
+  case "$arg" in
+    --fresh) fresh=1 ;;
+    --no-worker) worker=0 ;;
+    '') ;;
+    *) die "unknown argument: $arg" ;;
+  esac
+done
 
 # ---------- tunnel configuration -------------------------------------------
 tunnel_name=${TUNNEL_NAME:-}
@@ -186,6 +195,38 @@ else
   public=$url
 fi
 printf '%s\n' "$public" >"$run/tunnel-url"
+tunnel_url=$public
+
+# ---------- stable address ---------------------------------------------------
+# A quick tunnel's name dies with the process, so the gate's address would move
+# on every restart. The Worker in worker/ holds the current origin in a var and
+# proxies everything (WebSocket included), which means config.js is written
+# once and later restarts only redeploy the Worker.
+if [ "$worker" = 1 ] && [ -n "$tunnel_name" ]; then
+  # a named tunnel is already a fixed address; a Worker in front only adds hops
+  worker=0
+fi
+if [ "$worker" = 1 ] && [ -f "$here/worker/wrangler.jsonc" ]; then
+  echo "worker:  deploying front door -> $tunnel_url"
+  out=$( cd "$here/worker" && npx -y wrangler@4 deploy --var "ORIGIN:$tunnel_url" 2>&1 ) || true
+  # the deployed URL is <name>.<account-subdomain>.workers.dev, so every label
+  # has to be allowed, not just one
+  wurl=$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | tail -1 || true)
+  if [ -n "$wurl" ]; then
+    for _ in $(seq 15); do http_ok "$wurl/" && break; sleep 1; done
+    if http_ok "$wurl/"; then
+      printf '%s\n' "$wurl" >"$run/worker-url"
+      public=$wurl
+      echo "worker:  $wurl"
+    else
+      printf '%s\n' "$out" | tail -n 10 >&2
+      echo "worker:  deployed but not answering 2xx yet — config.js follows the tunnel" >&2
+    fi
+  else
+    printf '%s\n' "$out" | tail -n 10 >&2
+    echo "worker:  deploy failed (logged in? npx wrangler login) — config.js follows the tunnel" >&2
+  fi
+fi
 
 # ---------- config.js -------------------------------------------------------
 node - "$public" <<'NODE'

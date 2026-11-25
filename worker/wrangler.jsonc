@@ -1,0 +1,9 @@
+{
+  // Deployed by ../start.sh with `--var ORIGIN:<current tunnel>`; the name here
+  // is the first half of the stable address (<name>.<account>.workers.dev).
+  "name": "roblox-webport",
+  "main": "index.js",
+  "compatibility_date": "2026-11-25",
+  "workers_dev": true,
+  "observability": { "enabled": true }
+}

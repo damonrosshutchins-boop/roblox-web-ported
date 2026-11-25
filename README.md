@@ -13,6 +13,7 @@ itself is streamed by that server.
 | `proxy.html` | optional: roblox.com's login running through Scramjet in your browser |
 | `sw.js` | a thin service worker that forwards only the proxy prefix |
 | `config.js` | default server / Wisp relay / place id |
+| `worker/` | Cloudflare Worker that gives the changing quick tunnel one fixed address |
 | `vendor/` | Scramjet runtime, pinned (see below) |
 
 ## How it works
@@ -90,8 +91,18 @@ started, waits until that pid is gone, and fails rather than leaving two
 running. Pids, logs and the current URL live in `.run/` (git-ignored).
 `WEBPORT_SERVER` and `WEBPORT_PORT` override the defaults.
 
-Without `--setup` it falls back to a trycloudflare quick tunnel; because that
-name changes on every restart, `config.js` is rewritten and pushed each time.
+Without `--setup` it uses a trycloudflare quick tunnel. That name dies with the
+process, so `worker/` is deployed in front of it — a small Cloudflare Worker
+that proxies HTTP and WebSocket traffic to whichever origin is current. Each
+restart redeploys the Worker with the new tunnel and leaves `config.js` alone,
+so the gate keeps one fixed address (`https://roblox-webport.<account>.workers.dev`)
+and no commit is made unless that address itself changes. `--no-worker` skips
+this and points `config.js` straight at the tunnel.
+
+One-time setup for it is just `npx wrangler login` (browser approval); after that
+`start.sh` deploys non-interactively. The Worker is a transparent proxy on
+purpose: no caching, no rewriting, and `redirect: manual` so the server's 302s
+reach the browser, with `101` upgrades passed through for `/udp-relay`.
 
 ## Pointing it at your own server
 
