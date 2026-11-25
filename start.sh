@@ -41,6 +41,20 @@ http_ok() {
   case "$code" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
+# The game streams over /udp-relay, so a proxy that serves HTML but drops the
+# upgrade looks healthy right up to the first join. A real WebSocket client is
+# the only honest check: 101 means the upgrade was proxied end to end.
+ws_101() {
+  node -e '
+    const fs = require("fs");
+    const say = (s, code) => { try { fs.writeSync(1, s + "\n"); } catch {} process.exit(code); };
+    const ws = new WebSocket(process.argv[1]);
+    const t = setTimeout(() => say("timeout", 2), 10000);
+    ws.onopen = () => { clearTimeout(t); try { ws.close(); } catch {} say("101", 0); };
+    ws.onerror = () => { clearTimeout(t); say("no upgrade", 1); };
+  ' "$1/udp-relay"
+}
+
 # `$!` is the shell's own (MSYS) pid, not the Windows pid tasklist reports, so
 # ask this shell's process table. Never taskkill a translated pid: it belongs to
 # a different process.
@@ -206,25 +220,39 @@ if [ "$worker" = 1 ] && [ -n "$tunnel_name" ]; then
   # a named tunnel is already a fixed address; a Worker in front only adds hops
   worker=0
 fi
+worker_ok() { http_ok "$1/" && ws_101 "$1" >/dev/null; }
 if [ "$worker" = 1 ] && [ -f "$here/worker/wrangler.jsonc" ]; then
-  echo "worker:  deploying front door -> $tunnel_url"
-  out=$( cd "$here/worker" && npx -y wrangler@4 deploy --var "ORIGIN:$tunnel_url" 2>&1 ) || true
-  # the deployed URL is <name>.<account-subdomain>.workers.dev, so every label
-  # has to be allowed, not just one
-  wurl=$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | tail -1 || true)
-  if [ -n "$wurl" ]; then
-    for _ in $(seq 15); do http_ok "$wurl/" && break; sleep 1; done
-    if http_ok "$wurl/"; then
+  wurl=$(cat "$run/worker-url" 2>/dev/null || true)
+  was=$(cat "$run/worker-origin" 2>/dev/null || true)
+  # A deploy spends a few seconds and a new version, so only do it when the
+  # origin the Worker holds is not the one this tunnel just got — and even then
+  # only after the existing Worker has been proven to work as-is.
+  if [ "$was" = "$tunnel_url" ] && [ -n "$wurl" ] && worker_ok "$wurl"; then
+    public=$wurl
+    echo "worker:  origin unchanged — $wurl (200, /udp-relay 101)"
+  else
+    echo "worker:  deploying front door -> $tunnel_url"
+    out=$( cd "$here/worker" && npx -y wrangler@4 deploy --var "ORIGIN:$tunnel_url" 2>&1 ) || true
+    # the deployed URL is <name>.<account-subdomain>.workers.dev, so every label
+    # has to be allowed, not just one
+    wurl=$(printf '%s\n' "$out" | grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' | tail -1 || true)
+    if [ -n "$wurl" ]; then
+      for _ in $(seq 10); do worker_ok "$wurl" && break; sleep 1; done
       printf '%s\n' "$wurl" >"$run/worker-url"
-      public=$wurl
-      echo "worker:  $wurl"
+      if http_ok "$wurl/" && ws_101 "$wurl" >/dev/null; then
+        printf '%s\n' "$tunnel_url" >"$run/worker-origin"
+        public=$wurl
+        echo "worker:  $wurl (200, /udp-relay 101)"
+      elif http_ok "$wurl/"; then
+        echo "worker:  $wurl serves 200 but /udp-relay did not upgrade to 101 — config.js follows the tunnel" >&2
+      else
+        printf '%s\n' "$out" | tail -n 10 >&2
+        echo "worker:  deployed but not answering 2xx — config.js follows the tunnel" >&2
+      fi
     else
       printf '%s\n' "$out" | tail -n 10 >&2
-      echo "worker:  deployed but not answering 2xx yet — config.js follows the tunnel" >&2
+      echo "worker:  deploy failed (logged in? npx wrangler login) — config.js follows the tunnel" >&2
     fi
-  else
-    printf '%s\n' "$out" | tail -n 10 >&2
-    echo "worker:  deploy failed (logged in? npx wrangler login) — config.js follows the tunnel" >&2
   fi
 fi
 

@@ -3,10 +3,10 @@
 // the game session. Both are editable on index.html and remembered per browser
 // (localStorage), so a new tunnel or relay does not need a new deploy.
 window.RWP = {
-  // Your web-port server's public origin — currently a Cloudflare quick
-  // tunnel. A quick tunnel lives only as long as `cloudflared` is running and
-  // gets a new name on every restart, so if this stops answering, start the
-  // tunnel again and put its new origin in step 1 of index.html.
+  // The web-port server's stable front door: the Cloudflare Worker in worker/,
+  // which proxies to whichever trycloudflare quick tunnel is currently up. The
+  // Worker holds that origin in a var `start.sh` updates, so this address
+  // survives tunnel restarts. If it stops answering, run ./start.sh.
   backend: 'https://roblox-webport.damonrosshutchins.workers.dev',
   // Scramjet needs a Wisp endpoint; github.io cannot host one.
   wisp: 'wss://wisp.mercurywork.shop/',
