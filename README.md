@@ -9,13 +9,27 @@ itself is streamed by that server.
 
 | file | role |
 | --- | --- |
-| `index.html` | the gate — set your server + relay, then go to the proxy |
-| `proxy.html` | roblox.com's real login running through Scramjet in your browser |
+| `index.html` | the gate — set your server and relay, sign in on roblox.com, hand the cookie over |
+| `proxy.html` | optional: roblox.com's login running through Scramjet in your browser |
 | `sw.js` | a thin service worker that forwards only the proxy prefix |
 | `config.js` | default server / Wisp relay / place id |
 | `vendor/` | Scramjet runtime, pinned (see below) |
 
 ## How it works
+
+Sign in happens on **roblox.com itself**, in a normal tab. That is the only place
+Roblox's bot check can finish, so the gate does not try to host the login form:
+`index.html` links to `https://www.roblox.com/login`, you sign in there, and you
+paste the resulting `.ROBLOSECURITY` value into the gate (DevTools → Application →
+Cookies → `https://www.roblox.com`). The gate hands only that one value to the
+server you configured, in the URL **fragment** (`#token=…&place=…`) — a fragment is
+never part of a request, so the cookie does not appear in the server's access log,
+and the server's landing page clears it from the address bar before using it. The
+server verifies the cookie with Roblox, mints a session and opens the place.
+
+The cookie is never written to `localStorage` or a file by this page.
+
+### The proxied login (optional)
 
 `proxy.html` loads Scramjet in the page, registers `sw.js`, and renders
 `https://www.roblox.com/login` inside an iframe under a `/~/sj/` prefix. Scramjet
@@ -23,13 +37,17 @@ rewrites Roblox's own HTML and JS so the site runs on this origin. Requests leav
 the browser through a **Wisp relay** — a WebSocket that carries raw TCP — and the
 TLS session to Roblox is established inside the page by libcurl compiled to WASM,
 so the relay only ever sees ciphertext and your password is never terminated at
-it.
+it. If that login ever gets through, **Use this session** reads the cookie out of
+the proxy's own jar and hands it over the same way.
 
-The cookie from that login stays in the proxy's own cookie jar. Press **Use this
-session** and only the `.ROBLOSECURITY` value is read out of the jar and handed to
-the server you configured, in the URL fragment (`#token=…`) — a fragment is never
-part of a request, so it does not appear in the server's access log. The server
-verifies the cookie with Roblox, mints a session and opens the place.
+## Why the bot check stops the proxy login
+
+Roblox gates sign-in behind a “Verifying you're not a bot” challenge. It is a
+fingerprint challenge aimed at a normal browser origin, and it does not complete
+in a proxied page: the frame sits on that spinner indefinitely, no matter how fast
+the relay is. The proxy page watches for that screen and shows a link to the cookie
+path instead of leaving the spinner running. Nothing here solves or bypasses the
+challenge — you answer it on Roblox's own site, which is where it works.
 
 ## What a static host cannot do
 

@@ -24,6 +24,10 @@
   button.primary:hover { background: #3a7cff }
   button:disabled { opacity: .5; cursor: default }
   #status { padding: .35rem .8rem; font-size: 13px; color: #9aa3b2; border-bottom: 1px solid #1c2028 }
+  #botcheck { padding: .6rem .8rem; font-size: 13px; color: #f0d390; background: #241d0d;
+              border-bottom: 1px solid #4a3a12 }
+  #botcheck[hidden] { display: none }
+  #botcheck a { color: #8fb4ff }
   #frame { flex: 1; width: 100%; border: 0; background: #fff }
   .row { display: flex; gap: .5rem; align-items: center }
   .hint { padding: .55rem .8rem; font-size: 12.5px; color: #7f8899; border-top: 1px solid #1c2028 }
@@ -42,12 +46,19 @@
   </div>
 </header>
 <div id="status">starting the proxy…</div>
+<div id="botcheck" hidden>
+  Roblox is showing <b>“Verifying you're not a bot”</b>. That check does not complete inside a
+  proxy, so this page will keep spinning — sign in on roblox.com in a normal tab and hand the
+  cookie over instead. <a href="index.html#cookie">take the cookie path →</a>
+</div>
 <iframe id="frame" allow="clipboard-write; autoplay"></iframe>
 <div class="hint">
   <b>Sign in on the page above</b> — it is roblox.com's real login running through the Scramjet
   proxy from this site. When you are signed in, press <b>Use this session</b>: only the
   <code>.ROBLOSECURITY</code> value leaves the proxy jar, and it is handed to your server in the
-  URL fragment, which is never sent to it as a request.
+  URL fragment, which is never sent to it as a request.<br>
+  If Roblox asks you to verify you are not a bot, that check will not finish here: go back to the
+  first page and hand over the cookie from a normal roblox.com sign-in.
 </div>
 
 <script src="config.js"></script>
@@ -238,6 +249,25 @@ say('proxy up — sign in above, then press "Use this session"');
 
 $('go').onclick = () => go(bar.value.trim());
 bar.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(bar.value.trim()); });
+
+// Roblox answers a lot of sign-ins with "Verifying you're not a bot". That
+// challenge expects a normal browser origin, so in a proxied page it never
+// finishes and the spinner sits there. Watch for it and point at the cookie
+// hand-over instead of leaving a dead screen up.
+let botSeen = 0;
+const watch = setInterval(() => {
+  if (botSeen >= 2) return clearInterval(watch);
+  let text = '';
+  try {
+    const doc = frame.contentDocument;
+    text = (doc && doc.body && doc.body.innerText) || '';
+  } catch { return; }
+  if (!text || !/verifying you'?re not a (bot|robot)/i.test(text)) return;
+  if (++botSeen < 2) return; // ignore a screen that is only passing through
+  clearInterval(watch);
+  $('botcheck').hidden = false;
+  say("roblox is asking \"verifying you're not a bot\" — that check cannot finish in a proxy");
+}, 2000);
 
 use.onclick = async () => {
   use.disabled = true;
