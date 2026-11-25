@@ -1,2 +1,5 @@
 # start.sh runtime state (pids, logs, the current tunnel url)
 .run/
+
+# wrangler deploy cache (local account metadata)
+worker/.wrangler/
