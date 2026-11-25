@@ -71,15 +71,27 @@ Two pieces need a real server, and GitHub Pages is not one:
 ## Starting it
 
 ```bash
-./start.sh            # reuse a healthy tunnel, else start one
-./start.sh --fresh    # always start a new tunnel
+./start.sh --setup roblox.example.com   # once: Cloudflare login, named tunnel, DNS
+./start.sh                              # boot server + tunnel, point config.js
+./start.sh --fresh                      # stop the recorded tunnel, start a new one
+./start.sh --health https://…/          # exit 0 only for a 2xx
 ```
 
-It boots the web-port server (reusing one already answering on `:9989`), starts
-a cloudflared quick tunnel, reads the URL cloudflared actually printed, writes it
-into `config.js` and pushes that commit — so the gate follows the tunnel instead
-of pointing at a dead name. Pids, logs and the current URL stay in `.run/`,
-which is ignored. `WEBPORT_SERVER` and `WEBPORT_PORT` override the defaults.
+`--setup` opens Cloudflare's login in a browser, creates a tunnel named
+`roblox-webport`, routes your hostname to it and records both in
+`.run/tunnel.env`. From then on the public origin is fixed, so `config.js` is
+written once and restarts push nothing. A locally-managed tunnel keeps its
+credentials under `~/.cloudflared/`; for a dashboard-made tunnel put
+`TUNNEL_TOKEN_FILE=/path/to/token` in `.run/tunnel.env` instead.
+
+Health is 2xx-only: `curl -o /dev/null` accepts a 404 and `-f` accepts a 3xx, so
+the status code is read explicitly. `--fresh` stops the tunnel this script
+started, waits until that pid is gone, and fails rather than leaving two
+running. Pids, logs and the current URL live in `.run/` (git-ignored).
+`WEBPORT_SERVER` and `WEBPORT_PORT` override the defaults.
+
+Without `--setup` it falls back to a trycloudflare quick tunnel; because that
+name changes on every restart, `config.js` is rewritten and pushed each time.
 
 ## Pointing it at your own server
 

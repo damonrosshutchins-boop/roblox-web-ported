@@ -1,88 +1,190 @@
 #!/usr/bin/env bash
-# start.sh — boot the webport server + a cloudflared quick tunnel, then point
-# the static gate at that tunnel and push it to GitHub Pages.
+# start.sh — boot the webport server, bring up its Cloudflare tunnel, and keep
+# the static gate pointed at the public origin.
 #
-#   ./start.sh            reuse a healthy tunnel, otherwise start one
-#   ./start.sh --fresh    start a new tunnel even if the last one still answers
+#   ./start.sh                      reuse a healthy tunnel, else start one
+#   ./start.sh --fresh              stop the recorded tunnel, then start a new one
+#   ./start.sh --health <url>       exit 0 only for a 2xx (test hook)
+#   ./start.sh --setup <hostname>   once: Cloudflare login, named tunnel, DNS
 #
-# A trycloudflare quick tunnel gets a new name on every restart, so config.js
-# is rewritten from the URL cloudflared actually printed — not guessed — and
-# committed. Run this after a reboot, or whenever the gate stops reaching the
-# server.
+# A named tunnel (created by --setup) has a fixed hostname, so config.js is
+# written once and later starts push nothing. Until one is configured this
+# falls back to a trycloudflare quick tunnel, whose name changes on every
+# restart — then config.js follows it with a commit each time.
 #
-# Paths (override with env vars):
-#   WEBPORT_SERVER  the roblox-webport checkout   default ../roblox-webport
-#   WEBPORT_PORT    the one https port it uses    default 9989
+# env overrides: WEBPORT_SERVER, WEBPORT_PORT, CLOUDFLARED,
+#                TUNNEL_NAME, TUNNEL_HOSTNAME, TUNNEL_TOKEN_FILE
 set -euo pipefail
 
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # this repo (roblox-web-ported)
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # this repo
 root=$(cd "$here/.." && pwd)                          # _work/fix4
 server=${WEBPORT_SERVER:-$root/roblox-webport}
 port=${WEBPORT_PORT:-9989}
-cloudflared=$root/bin/cloudflared.exe
+cloudflared=${CLOUDFLARED:-$root/bin/cloudflared.exe}
 
 run=$here/.run
 mkdir -p "$run"
 tunnel_pid=$run/cloudflared.pid
 tunnel_log=$run/cloudflared.log
 tunnel_out=$run/cloudflared.out
+tunnel_env=$run/tunnel.env
 server_log=$run/server.log
+
+die() { echo "start: $*" >&2; exit 1; }
+
+# 2xx only. `curl -o /dev/null` accepts any status and `-f` still accepts 3xx,
+# so read the code: a tunnel that answers 404 must not count as healthy.
+http_ok() {
+  local code
+  code=$(curl -sk --max-time 8 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null) || return 1
+  case "$code" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+# `$!` is the shell's own (MSYS) pid, not the Windows pid tasklist reports, so
+# ask this shell's process table. Never taskkill a translated pid: it belongs to
+# a different process.
+pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+
+# stop, then keep asking until the pid is really gone; the caller must know a
+# half-killed tunnel is not replaced silently
+stop_pid() {
+  kill "$1" 2>/dev/null || true
+  for _ in $(seq 20); do pid_alive "$1" || return 0; sleep 0.5; done
+  return 1
+}
+
+case "${1:-}" in
+  --health)
+    [ -n "${2:-}" ] || die "usage: ./start.sh --health <url>"
+    if http_ok "$2"; then echo "2xx  $2"; else echo "not 2xx  $2" >&2; exit 1; fi
+    exit 0 ;;
+  --setup)
+    host=${2:-}; [ -n "$host" ] || die "usage: ./start.sh --setup <hostname> [tunnel-name]"
+    name=${3:-roblox-webport}
+    [ -f "$cloudflared" ] || die "no cloudflared at $cloudflared"
+    echo "Cloudflare login: a browser opens — pick the zone that owns $host."
+    "$cloudflared" tunnel login || die "cloudflared login failed"
+    if ! "$cloudflared" tunnel list 2>/dev/null | awk 'NR>1 {print $2}' | grep -qx "$name"; then
+      "$cloudflared" tunnel create "$name" || die "could not create tunnel $name"
+    else
+      echo "tunnel:  '$name' already exists"
+    fi
+    "$cloudflared" tunnel route dns "$name" "$host" \
+      || echo "dns:     route for $host may already exist — continuing"
+    cat >"$tunnel_env" <<EOF
+# written by ./start.sh --setup; local paths only, no secrets
+TUNNEL_NAME=$name
+TUNNEL_HOSTNAME=$host
+EOF
+    echo "tunnel:  named '$name' -> https://$host"
+    echo "next:    ./start.sh --fresh"
+    exit 0 ;;
+esac
 
 fresh=0
 [ "${1:-}" = "--fresh" ] && fresh=1
 
-die() { echo "start: $*" >&2; exit 1; }
+# ---------- tunnel configuration -------------------------------------------
+tunnel_name=${TUNNEL_NAME:-}
+tunnel_host=${TUNNEL_HOSTNAME:-}
+token_file=${TUNNEL_TOKEN_FILE:-}
+if [ -f "$tunnel_env" ]; then
+  # shellcheck disable=SC1090
+  . "$tunnel_env"
+  tunnel_name=${TUNNEL_NAME:-$tunnel_name}
+  tunnel_host=${TUNNEL_HOSTNAME:-$tunnel_host}
+  token_file=${TUNNEL_TOKEN_FILE:-$token_file}
+fi
+[ -f "$cloudflared" ] || die "no cloudflared at $cloudflared"
 
 # ---------- server ----------------------------------------------------------
-# https with a self-signed cert, so every probe uses -k
-up() { curl -sk --max-time 5 -o /dev/null "https://127.0.0.1:$port/"; }
-
-if up; then
+if http_ok "https://127.0.0.1:$port/"; then
   echo "server:  already up on :$port"
 else
   echo "server:  starting (log: $server_log)"
   ( cd "$server" && node index.mjs >"$server_log" 2>&1 & echo $! >"$run/server.pid" )
-  for _ in $(seq 40); do up && break; sleep 1; done
-  up || { tail -n 20 "$server_log" >&2; die "server did not answer on :$port"; }
+  for _ in $(seq 40); do http_ok "https://127.0.0.1:$port/" && break; sleep 1; done
+  http_ok "https://127.0.0.1:$port/" || { tail -n 20 "$server_log" >&2; die "server is not answering 2xx on :$port"; }
   echo "server:  up on :$port"
 fi
 
 # ---------- tunnel ----------------------------------------------------------
 read_url() { grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$tunnel_log" 2>/dev/null | tail -1; }
-answers() { [ -n "${1:-}" ] && curl -s --max-time 8 -o /dev/null "$1/"; }
 
-[ -f "$cloudflared" ] || die "no cloudflared at $cloudflared"
-
-# stop the tunnel this script started last time (by recorded pid, never by name)
-if [ -f "$tunnel_pid" ]; then
-  pid=$(cat "$tunnel_pid" 2>/dev/null || true)
-  if [ "$fresh" = 1 ] && [ -n "$pid" ]; then
-    kill "$pid" 2>/dev/null || taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
-    rm -f "$tunnel_pid"
-    echo "tunnel:  stopped pid $pid"
+if [ "$fresh" = 1 ] && [ -f "$tunnel_pid" ]; then
+  old=$(cat "$tunnel_pid" 2>/dev/null || true)
+  if pid_alive "$old"; then
+    stop_pid "$old" && echo "tunnel:  stopped pid $old" || die "pid $old survived stop_pid"
+  else
+    echo "tunnel:  pid ${old:-?} already gone"
   fi
+  rm -f "$tunnel_pid"
 fi
 
-url=$(read_url || true)
-if [ "$fresh" = 0 ] && answers "$url"; then
-  echo "tunnel:  reusing $url"
-else
+start_tunnel() {
   : >"$tunnel_log"
-  "$cloudflared" tunnel --url "https://127.0.0.1:$port" --no-tls-verify --no-autoupdate \
-    --logfile "$tunnel_log" >"$tunnel_out" 2>&1 &
+  if [ -n "$tunnel_name" ] && [ -n "$token_file" ]; then
+    TUNNEL_TOKEN=$(cat "$token_file") "$cloudflared" tunnel --no-autoupdate \
+      --logfile "$tunnel_log" run >"$tunnel_out" 2>&1 &
+  elif [ -n "$tunnel_name" ]; then
+    "$cloudflared" tunnel --url "https://127.0.0.1:$port" --no-tls-verify --no-autoupdate \
+      --logfile "$tunnel_log" run "$tunnel_name" >"$tunnel_out" 2>&1 &
+  else
+    "$cloudflared" tunnel --url "https://127.0.0.1:$port" --no-tls-verify --no-autoupdate \
+      --logfile "$tunnel_log" >"$tunnel_out" 2>&1 &
+  fi
   echo $! >"$tunnel_pid"
-  url=""
-  for _ in $(seq 40); do url=$(read_url || true); [ -n "$url" ] && break; sleep 1; done
-  [ -n "$url" ] || { tail -n 20 "$tunnel_log" >&2; die "cloudflared printed no tunnel URL in 40s"; }
-  for _ in $(seq 30); do answers "$url" && break; sleep 1; done
-  answers "$url" || { tail -n 20 "$tunnel_log" >&2; die "tunnel $url does not reach the server yet"; }
-  echo "tunnel:  $url"
+}
+
+if [ -n "$tunnel_name" ]; then
+  public="https://$tunnel_host"
+  running=0
+  if [ "$fresh" = 0 ] && [ -f "$tunnel_pid" ] && pid_alive "$(cat "$tunnel_pid")" && http_ok "$public/"; then
+    running=1
+    echo "tunnel:  reusing $public"
+  fi
+  if [ "$running" = 0 ]; then
+    start_tunnel
+    for _ in $(seq 60); do
+      http_ok "$public/" && break
+      pid_alive "$(cat "$tunnel_pid" 2>/dev/null || true)" \
+        || { tail -n 20 "$tunnel_log" >&2; die "cloudflared exited before $public answered (tunnel name or credentials wrong?)"; }
+      sleep 1
+    done
+    http_ok "$public/" || { tail -n 20 "$tunnel_log" >&2; die "named tunnel is not answering 2xx at $public/ (DNS not routed yet?)"; }
+    echo "tunnel:  $public (named '$tunnel_name')"
+  fi
+else
+  url=$(read_url || true)
+  running=0
+  if [ "$fresh" = 0 ] && [ -f "$tunnel_pid" ] && pid_alive "$(cat "$tunnel_pid")" \
+     && [ -n "$url" ] && http_ok "$url/"; then
+    running=1
+    echo "tunnel:  reusing $url"
+  fi
+  if [ "$running" = 0 ]; then
+    start_tunnel
+    url=""
+    for _ in $(seq 40); do url=$(read_url || true); [ -n "$url" ] && break; sleep 1; done
+    [ -n "$url" ] || { tail -n 20 "$tunnel_log" >&2; die "cloudflared printed no tunnel URL in 40s"; }
+    # a fresh quick tunnel can answer 502/530 for its first seconds while the
+    # edge picks up the new name, so give it a minute and keep retrying
+    for _ in $(seq 60); do
+      http_ok "$url/" && break
+      pid_alive "$(cat "$tunnel_pid" 2>/dev/null || true)" \
+        || { tail -n 20 "$tunnel_log" >&2; die "cloudflared exited before $url answered"; }
+      sleep 1
+    done
+    http_ok "$url/" || { tail -n 20 "$tunnel_log" >&2; die "quick tunnel $url is not answering 2xx"; }
+    echo "tunnel:  $url"
+    echo "tunnel:  quick tunnel — this name dies with it; ./start.sh --setup <hostname> for a stable one"
+  fi
+  public=$url
 fi
-printf '%s\n' "$url" >"$run/tunnel-url"
+printf '%s\n' "$public" >"$run/tunnel-url"
 
 # ---------- config.js -------------------------------------------------------
-before=$(cat "$here/config.js")
-node - "$url" <<'NODE'
+node - "$public" <<'NODE'
 const fs = require('fs');
 const url = process.argv[2];
 const path = 'config.js';
@@ -90,13 +192,12 @@ const before = fs.readFileSync(path, 'utf8');
 const after = before.replace(/(\n\s*backend:\s*')[^']*(')/, `$1${url}$2`);
 if (after === before && !before.includes(`backend: '${url}'`))
   throw new Error('config.js has no backend: line to update');
-fs.writeFileSync(path, after);
+if (after !== before) fs.writeFileSync(path, after);
 NODE
-after=$(cat "$here/config.js")
-if [ "$before" = "$after" ]; then
-  echo "config:  already points at $url"
+if grep -q "backend: '$public'" "$here/config.js"; then
+  echo "config:  backend = $public"
 else
-  echo "config:  backend -> $url"
+  die "config.js did not take $public"
 fi
 
 # ---------- publish ---------------------------------------------------------
@@ -110,10 +211,9 @@ git config user.email >/dev/null || ident=(-c user.name=damonrosshutchins-boop
   -c user.email=damonrosshutchins-boop@users.noreply.github.com)
 git add config.js
 git ${ident[@]+"${ident[@]}"} commit -q -m "$(cat <<EOF
-Point the gate at the current tunnel
+Point the gate at $public
 
-cloudflared handed out $url; a quick tunnel changes name on every
-restart, so config.js follows the one that is actually running.
+$(if [ -n "$tunnel_name" ]; then echo "The named tunnel is fixed, so this line stops moving."; else echo "A quick tunnel changes name on every restart, so config.js follows the one that is running."; fi)
 
 Generated with Codebuff 🤖
 Co-Authored-By: Codebuff <noreply@codebuff.com>
