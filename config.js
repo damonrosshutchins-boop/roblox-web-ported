@@ -7,7 +7,7 @@ window.RWP = {
   // tunnel. A quick tunnel lives only as long as `cloudflared` is running and
   // gets a new name on every restart, so if this stops answering, start the
   // tunnel again and put its new origin in step 1 of index.html.
-  backend: 'https://caps-solve-dover-generator.trycloudflare.com',
+  backend: 'https://roblox-webport.damonrosshutchins.workers.dev',
   // Scramjet needs a Wisp endpoint; github.io cannot host one.
   wisp: 'wss://wisp.mercurywork.shop/',
   place: '1818',
