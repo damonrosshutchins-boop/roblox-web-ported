@@ -17,17 +17,27 @@ itself is streamed by that server.
 
 ## How it works
 
-Sign in happens on **roblox.com itself**, in a normal tab. That is the only place
-Roblox's bot check can finish, so the gate does not try to host the login form:
-`index.html` links to `https://www.roblox.com/login`, you sign in there, and you
-paste the resulting `.ROBLOSECURITY` value into the gate (DevTools → Application →
-Cookies → `https://www.roblox.com`). The gate hands only that one value to the
-server you configured, in the URL **fragment** (`#token=…&place=…`) — a fragment is
-never part of a request, so the cookie does not appear in the server's access log,
-and the server's landing page clears it from the address bar before using it. The
-server verifies the cookie with Roblox, mints a session and opens the place.
+Sign in is **Quick Login**, done by your server. The gate's **Sign in with a
+one-time code** button opens `backend/?place=…`; the server asks Roblox for a
+short-lived code and shows it. You approve that code in the Roblox app, or at
+`roblox.com → Account Settings → Quick Login`, on a device that is already signed
+in. Roblox then hands the server a `.ROBLOSECURITY` in a server-to-server call,
+the server confirms it, mints the session and opens the place. No password is
+typed into this site, and no cookie is ever copied out of DevTools or into a
+browser page.
 
-The cookie is never written to `localStorage` or a file by this page.
+### Fallback: paste the cookie
+
+If you would rather not use Quick Login, sign in on **roblox.com itself** in a
+normal tab — the only place Roblox's bot check can finish — and paste the
+resulting `.ROBLOSECURITY` value into the gate (DevTools → Application → Cookies →
+`https://www.roblox.com`). The gate hands only that one value to the server you
+configured, in the URL **fragment** (`#token=…&place=…`) — a fragment is never part
+of a request, so the cookie does not appear in the server's access log, and the
+server's landing page clears it from the address bar before using it. The server
+verifies the cookie with Roblox, mints a session and opens the place.
+
+That cookie is never written to `localStorage` or a file by this page.
 
 ### The proxied login (optional)
 
@@ -65,8 +75,10 @@ edit the defaults in `config.js` and redeploy. The server must be the one runnin
 this project's `roblox-webport` checkout with the landing page that accepts a
 handed-over cookie (`#token=…&place=…`); it replies by minting `/pg/<sid>/`.
 
-A `trycloudflare.com` quick tunnel changes URL every restart — put a stable origin
-in `config.js` once you have one.
+A `trycloudflare.com` quick tunnel changes URL every restart, and `config.js`
+currently points at one (`https://powell-entitled-federal-antibody.trycloudflare.com`).
+When it stops answering, restart `cloudflared` and either type the new origin in
+step 1 of `index.html` (remembered per browser) or update `config.js` and redeploy.
 
 ## Vendored Scramjet
 

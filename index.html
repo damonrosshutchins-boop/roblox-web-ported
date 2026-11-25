@@ -61,12 +61,24 @@
     <div class="note" id="note"></div>
   </section>
 
-  <section class="card" id="cookie">
+  <section class="card" id="code">
     <div class="step">2 · sign in</div>
-    <p>Sign in on Roblox's own site in a normal tab: that is where the <b>“Verifying you're not a
-       bot”</b> check can actually finish. Then copy the session cookie it leaves behind and paste
-       it here. Only that one value is handed over, it travels in the URL fragment (never sent as a
-       request), and nothing is stored in this browser.</p>
+    <p>The easy one. Press <b>Sign in with a one-time code</b>: your server shows a short code and
+       you approve it in the Roblox app — or at <b>roblox.com → Account Settings → Quick Login</b> —
+       on a phone or browser that is already signed in. No password is typed here, nothing is
+       copied out of DevTools, and the session is minted on your server, so it never exists in
+       this page.</p>
+    <button class="btn" id="ql" type="button">Sign in with a one-time code</button>
+    <div class="note" id="qnote"></div>
+  </section>
+
+  <section class="card quiet" id="cookie">
+    <div class="step">or: paste a .ROBLOSECURITY</div>
+    <p>If you would rather not use Quick Login, sign in on Roblox's own site in a normal tab —
+       that is where the <b>“Verifying you're not a bot”</b> check can actually finish — then copy
+       the session cookie it leaves behind and paste it here. Only that one value is handed over,
+       it travels in the URL fragment (never sent as a request), and nothing is stored in this
+       browser.</p>
     <p class="warnline">Roblox keeps the session in an <code>HttpOnly</code> cookie, so read it from
        DevTools — <b>F12 → Application → Cookies → <code>https://www.roblox.com</code> →
        <code>.ROBLOSECURITY</code></b> — and copy its <b>Value</b>, which starts with
@@ -131,6 +143,19 @@ for (const k of keys) {
   });
 }
 check();
+
+// Quick Login happens on the server, where the code can be polled and the
+// cookie can be minted without ever entering a page on another origin.
+$('ql').onclick = () => {
+  const backend = $('backend').value.trim().replace(/\/+$/, '');
+  if (!backend) { $('qnote').textContent = 'set your server in step 1 first'; $('qnote').className = 'note warn'; return; }
+  if (!/^https?:\/\//i.test(backend)) { $('qnote').textContent = 'server should start with https://'; $('qnote').className = 'note warn'; return; }
+  $('qnote').textContent = 'opening your server…';
+  $('qnote').className = 'note';
+  const placeId = Number(($('place').value || '1818').replace(/\D/g, '')) || 1818;
+  try { localStorage.setItem('rwp_place', String(placeId)); } catch {}
+  location.href = backend + '/?place=' + placeId;
+};
 
 // Roblox's cookie value contains '|' and quotes nobody should have to keep
 // straight, and a pasted "name=value" or whole cookie header is easy to produce,
