@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in through the proxy — webport</title>
+<style>
+  :root { color-scheme: dark }
+  * { box-sizing: border-box }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+         background: #101216; color: #e7e9ee; display: flex; flex-direction: column; height: 100vh }
+  header { display: flex; gap: .5rem; align-items: center; padding: .6rem .8rem;
+           border-bottom: 1px solid #262a33; background: #171a20; flex-wrap: wrap }
+  h1 { font-size: 14px; font-weight: 600; margin: 0 .6rem 0 0; color: #9aa3b2; white-space: nowrap }
+  .back { text-decoration: none; color: #9aa3b2; font-size: 16px; padding: 0 .35rem; border-radius: 6px }
+  .back:hover { color: #fff }
+  input, button { font: inherit; border-radius: 7px; border: 1px solid #2f3541;
+                  background: #12151a; color: #e7e9ee; padding: .42rem .6rem }
+  input#bar { flex: 1 1 22rem; min-width: 12rem }
+  input#place { width: 7rem }
+  button { cursor: pointer; background: #1d2330 }
+  button:hover { background: #26303f }
+  button.primary { background: #2b6ef6; border-color: #2b6ef6; color: #fff; font-weight: 600 }
+  button.primary:hover { background: #3a7cff }
+  button:disabled { opacity: .5; cursor: default }
+  #status { padding: .35rem .8rem; font-size: 13px; color: #9aa3b2; border-bottom: 1px solid #1c2028 }
+  #frame { flex: 1; width: 100%; border: 0; background: #fff }
+  .row { display: flex; gap: .5rem; align-items: center }
+  .hint { padding: .55rem .8rem; font-size: 12.5px; color: #7f8899; border-top: 1px solid #1c2028 }
+  .hint b { color: #b9c2d2; font-weight: 600 }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="index.html" title="back">←</a>
+  <h1>Roblox login via proxy</h1>
+  <input id="bar" value="https://www.roblox.com/login" spellcheck="false">
+  <button id="go">Go</button>
+  <div class="row">
+    <input id="place" value="1818" inputmode="numeric" title="place id">
+    <button id="use" class="primary">Use this session</button>
+  </div>
+</header>
+<div id="status">starting the proxy…</div>
+<iframe id="frame" allow="clipboard-write; autoplay"></iframe>
+<div class="hint">
+  <b>Sign in on the page above</b> — it is roblox.com's real login running through the Scramjet
+  proxy from this site. When you are signed in, press <b>Use this session</b>: only the
+  <code>.ROBLOSECURITY</code> value leaves the proxy jar, and it is handed to your server in the
+  URL fragment, which is never sent to it as a request.
+</div>
+
+<script src="config.js"></script>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const bar = $('bar'), status = $('status'), frame = $('frame'), use = $('use');
+const say = (t) => { status.textContent = t; console.log('[proxy]', t); };
+
+// Everything is resolved from where the page is served, so the same files work
+// at a domain root and under /<repo>/ on github.io.
+const BASE = new URL('./', location.href).pathname;
+
+const cfg = window.RWP || {};
+const read = (k) => {
+  let stored = '';
+  try { stored = localStorage.getItem('rwp_' + k) || ''; } catch {}
+  return (stored || cfg[k] || '').trim();
+};
+const backend = read('backend').replace(/\/+$/, '');
+let wisp = read('wisp');
+// the transport refuses a Wisp URL without the trailing slash
+if (wisp && !wisp.endsWith('/')) wisp += '/';
+$('place').value = read('place') || '1818';
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error('could not load ' + src));
+    document.head.appendChild(el);
+  });
+}
+
+let controller = null, frameCtl = null;
+
+function pickDot(raw) {
+  const want = '.ROBLOSECURITY';
+  const fromString = (s) => {
+    for (const part of String(s).split(/;\s*/)) {
+      const i = part.indexOf('=');
+      if (i > 0 && part.slice(0, i).trim() === want) return part.slice(i + 1).trim();
+    }
+    return null;
+  };
+  const each = (list) => {
+    for (const c of list) {
+      if (!c) continue;
+      if (Array.isArray(c) && c[0] === want && c[1]) return String(c[1]);
+      if (typeof c === 'object' && (c.name ?? c.key) === want && (c.value ?? c.val))
+        return String(c.value ?? c.val);
+    }
+    return null;
+  };
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    // dump() hands back serialized jar state on some versions
+    if (s.startsWith('{') || s.startsWith('[')) { try { return pickDot(JSON.parse(s)); } catch {} }
+    return fromString(raw);
+  }
+  if (Array.isArray(raw)) return each(raw);
+  if (typeof raw === 'object') {
+    const values = Object.values(raw);
+    const flat = values.flatMap((v) => (Array.isArray(v) ? v : [v]));
+    const direct = each(flat);
+    if (direct) return direct;
+    // scramjet keys its dump as "domain@path@name"
+    for (const [k, v] of Object.entries(raw)) {
+      if (/@\.ROBLOSECURITY$/.test(k)) {
+        if (typeof v === 'string') return v;
+        if (v && typeof v === 'object') return String(v.value ?? v.val ?? '') || null;
+      }
+    }
+    for (const v of values) if (typeof v === 'string' && v.startsWith('_|WARNING')) return v;
+  }
+  return null;
+}
+
+function idbCookies() {
+  return new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open('__scramjet_controller'); } catch { return resolve(null); }
+    req.onerror = () => resolve(null);
+    req.onsuccess = () => {
+      const db = req.result;
+      try {
+        if (![...db.objectStoreNames].includes('state')) return resolve(null);
+        const get = db.transaction('state', 'readonly').objectStore('state').get('cookies');
+        get.onerror = () => resolve(null);
+        get.onsuccess = () => resolve(get.result ?? null);
+      } catch { resolve(null); }
+    };
+  });
+}
+
+async function findToken() {
+  const jar = controller && controller.cookieJar;
+  if (jar) {
+    // the jar API has moved between releases — try the shapes that exist
+    const calls = [
+      ['getCookies(url)', () => jar.getCookies(new URL('https://www.roblox.com/'))],
+      ['getCookiesForURL(url)', () => jar.getCookiesForURL(new URL('https://www.roblox.com/'))],
+      ['getCookies()', () => jar.getCookies()],
+      ['getAllCookies()', () => jar.getAllCookies()],
+      ['dump()', () => jar.dump()],
+    ];
+    for (const [name, call] of calls) {
+      try {
+        const hit = pickDot(await call());
+        if (hit) { say('found .ROBLOSECURITY via cookieJar.' + name); return hit; }
+      } catch { /* method not present in this version */ }
+    }
+  }
+  const fromDb = pickDot(await idbCookies());
+  if (fromDb) { say("found .ROBLOSECURITY in the controller's IndexedDB jar"); return fromDb; }
+  let docCookie = null;
+  try { docCookie = frame.contentWindow.document.cookie; } catch {}
+  const fromDoc = pickDot(docCookie);
+  if (fromDoc) { say("found .ROBLOSECURITY in the proxied page's cookie view"); return fromDoc; }
+  return null;
+}
+
+function go(url) {
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  try { frameCtl.go(url); } catch (e) { say('navigation failed: ' + e.message); }
+}
+
+try {
+  if (!wisp) throw new Error('no Wisp relay is set — open the first page and fill it in');
+  // The controller is driven directly instead of through proxy-bootstrap: that
+  // bootstrap downloads its runtime from jsdelivr at service-worker start,
+  // which is a second network dependency and a second version to pin. These
+  // files are vendored next to this page.
+  await loadScript(BASE + 'vendor/scramjet.js');
+  await loadScript(BASE + 'vendor/controller.api.js');
+  await loadScript(BASE + 'vendor/scramjet-utils.js');
+  await loadScript(BASE + 'vendor/libcurl-client.js');
+
+  const reg = await navigator.serviceWorker.register(BASE + 'sw.js',
+    { type: 'classic', updateViaCache: 'none' });
+  await navigator.serviceWorker.ready;
+  const sw = reg.active || reg.waiting || reg.installing;
+  if (!sw) throw new Error('the service worker did not activate');
+
+  const { Controller, config } = window.$scramjetController;
+  config.prefix = BASE + '~/sj/';
+  config.scramjetPath = BASE + 'vendor/scramjet.js';
+  config.injectPath = BASE + 'vendor/controller.inject.js';
+  config.wasmPath = BASE + 'vendor/scramjet.wasm';
+
+  const Transport = window.LibcurlTransport || window.LibcurlClient;
+  if (!Transport) throw new Error('the libcurl transport did not load');
+  const transport = new Transport.LibcurlClient({ wisp });
+
+  controller = new Controller({ serviceworker: sw, transport });
+  await controller.wait();
+  say('proxy ready');
+} catch (e) {
+  say('Scramjet failed to start: ' + e.message);
+  throw e;
+}
+
+// The plugin bundle is versioned apart from the controller, and the current
+// pairing throws inside the request path (HttpCachePlugin -> fromNativeResponse
+// is undefined), so plugins are optional: without them the proxy still works
+// and only loses the automatic address-bar updates.
+function makeFrame() {
+  const U = window.$scramjetUtils || {};
+  const plugins = [];
+  try {
+    if (U.UrlWatcherPlugin) plugins.push(new U.UrlWatcherPlugin((url) => { if (url) bar.value = url; }));
+  } catch {}
+  try {
+    return plugins.length ? controller.createFrame(frame, { plugins }) : controller.createFrame(frame);
+  } catch (e) {
+    say('plugins unavailable (' + e.message + ') — running without them');
+    return controller.createFrame(frame);
+  }
+}
+frameCtl = makeFrame();
+
+window.__scramjetFrame = frameCtl;
+const start = new URLSearchParams(location.search).get('url');
+go(start ? decodeURIComponent(start) : 'https://www.roblox.com/login');
+say('proxy up — sign in above, then press "Use this session"');
+
+$('go').onclick = () => go(bar.value.trim());
+bar.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(bar.value.trim()); });
+
+use.onclick = async () => {
+  use.disabled = true;
+  try {
+    if (!backend) { say('no server set — open the first page and fill in your server'); return; }
+    say('looking for .ROBLOSECURITY in the proxy jar…');
+    const token = await findToken();
+    if (!token) { say('no .ROBLOSECURITY yet — finish signing in above first.'); return; }
+    const placeId = Number(($('place').value || '1818').replace(/\D/g, '')) || 1818;
+    say('token found (not logged) — handing it to your server…');
+    // A fragment is used rather than a query string or a body: it is not part
+    // of the request, so the cookie never lands in the server's access log.
+    const q = new URLSearchParams({ token, place: String(placeId) });
+    location.href = backend + '/#' + q.toString();
+  } finally {
+    use.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
